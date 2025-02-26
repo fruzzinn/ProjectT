@@ -73,14 +73,34 @@ class ThreatActor(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
     description = Column(Text)
-    aliases = Column(JSON)
+    aliases = Column(Text)  # Changed from JSON to Text
     motivation = Column(String)
     sophistication = Column(String)
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
-    ttps = Column(JSON)  # Tactics, Techniques, and Procedures (MITRE ATT&CK)
+    ttps = Column(Text)  # Changed from JSON to Text
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    @property
+    def aliases_list(self):
+        """Convert stored JSON string to Python list"""
+        if not self.aliases:
+            return []
+        try:
+            return json.loads(self.aliases)
+        except:
+            return []
+    
+    @property
+    def ttps_list(self):
+        """Convert stored JSON string to Python list"""
+        if not self.ttps:
+            return []
+        try:
+            return json.loads(self.ttps)
+        except:
+            return []
 
 class Indicator(Base):
     __tablename__ = "indicators"
@@ -108,14 +128,14 @@ class NewsArticle(Base):
     severity_score = Column(Float)  # Numerical severity (0-10)
     confidence = Column(Float)  # Confidence in the analysis (0-1)
     
-    # MITRE ATT&CK classification - stored as JSON strings in SQLite
-    mitre_tactics = Column(String)  # JSON string of MITRE ATT&CK tactics
-    mitre_techniques = Column(String)  # JSON string of MITRE ATT&CK techniques
+    # MITRE ATT&CK classification - stored as Text (JSON strings) in SQLite
+    mitre_tactics = Column(Text)  # JSON string of MITRE ATT&CK tactics
+    mitre_techniques = Column(Text)  # JSON string of MITRE ATT&CK techniques
     
     # CVE and vulnerability tracking
     cve = Column(String, index=True, nullable=True)  # Store as string
     cvss_score = Column(Float, nullable=True)  # Common Vulnerability Scoring System
-    affected_systems = Column(String, nullable=True)  # JSON string of affected systems
+    affected_systems = Column(Text, nullable=True)  # JSON string of affected systems
     
     # Additional threat data
     threat_actors = relationship("ThreatActor", secondary=threat_actor_association)
@@ -155,8 +175,6 @@ class NewsArticle(Base):
             return json.loads(self.affected_systems)
         except:
             return []
-
-
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -434,8 +452,6 @@ async def fetch_article_content(url):
         return ""
 
 # Background task functions
-# Find the process_article function in your app.py and update it to handle list conversions
-
 async def process_article(article_data, db):
     """Process a single article with enhanced analysis"""
     try:
@@ -466,20 +482,15 @@ async def process_article(article_data, db):
             else:
                 cve_value = analysis["cve"]  # Already a string or None
         
-        # Convert other possible list fields to JSON strings
+        # Convert other list fields to JSON strings
         mitre_tactics = analysis.get("mitre_tactics", [])
         mitre_techniques = analysis.get("mitre_techniques", [])
         affected_systems = analysis.get("affected_systems", [])
         
-        # Make sure these are JSON serializable
-        if isinstance(mitre_tactics, list):
-            mitre_tactics = json.dumps(mitre_tactics)
-        
-        if isinstance(mitre_techniques, list):
-            mitre_techniques = json.dumps(mitre_techniques)
-            
-        if isinstance(affected_systems, list):
-            affected_systems = json.dumps(affected_systems)
+        # Ensure proper JSON serialization for SQLite Text columns
+        mitre_tactics_json = json.dumps(mitre_tactics) if mitre_tactics else None
+        mitre_techniques_json = json.dumps(mitre_techniques) if mitre_techniques else None
+        affected_systems_json = json.dumps(affected_systems) if affected_systems else None
         
         # Extract CVSS score for CVE if available
         cvss_score = None
@@ -500,11 +511,11 @@ async def process_article(article_data, db):
             severity=analysis.get("severity", "Medium"),
             severity_score=analysis.get("severity_score", 5.0),
             confidence=analysis.get("confidence", 0.5),
-            mitre_tactics=mitre_tactics,
-            mitre_techniques=mitre_techniques,
-            cve=cve_value,  # Now properly handled
+            mitre_tactics=mitre_tactics_json,
+            mitre_techniques=mitre_techniques_json,
+            cve=cve_value,
             cvss_score=cvss_score,
-            affected_systems=affected_systems,
+            affected_systems=affected_systems_json,
             published_date=datetime.fromisoformat(article_data["publishedAt"].replace("Z", "+00:00"))
             if article_data.get("publishedAt") else datetime.utcnow()
         )
@@ -524,14 +535,16 @@ async def process_article(article_data, db):
             for actor_name in threat_actors:
                 actor = db.query(ThreatActor).filter(ThreatActor.name == actor_name).first()
                 if not actor:
+                    # Create with proper JSON serialization for Text columns
                     actor = ThreatActor(
                         name=actor_name,
                         description=f"Threat actor mentioned in relation to {article.title}",
-                        aliases=[],
+                        aliases=json.dumps([]),  # Empty array as JSON string
                         motivation="Unknown",
                         sophistication="Unknown",
                         first_seen=article.published_date,
-                        last_seen=article.published_date
+                        last_seen=article.published_date,
+                        ttps=json.dumps([])  # Empty array as JSON string
                     )
                     db.add(actor)
                     db.commit()
@@ -540,7 +553,31 @@ async def process_article(article_data, db):
                 # Associate actor with article
                 article.threat_actors.append(actor)
         
-        # Rest of the function remains the same...
+        # Process IOCs
+        for ioc_type, values in iocs.items():
+            # Normalize IOC type
+            normalized_type = ioc_type.rstrip('s')  # Convert 'ip_addresses' to 'ip_address'
+            if normalized_type == 'ip_addres':  # Fix special case
+                normalized_type = 'ip'
+                
+            for value in values:
+                # Check if IOC already exists
+                ioc = db.query(Indicator).filter(Indicator.value == value).first()
+                if not ioc:
+                    ioc = Indicator(
+                        type=normalized_type,
+                        value=value,
+                        confidence=0.7,  # Default confidence
+                        context=f"Extracted from article: {article.title}",
+                        first_seen=article.published_date,
+                        last_seen=article.published_date
+                    )
+                    db.add(ioc)
+                    db.commit()
+                    db.refresh(ioc)
+                
+                # Associate IOC with article
+                article.indicators.append(ioc)
         
         db.commit()
         return article
@@ -669,7 +706,27 @@ def get_threats(
     query = query.offset((page - 1) * page_size).limit(page_size)
     
     # Execute query
-    results = query.all()
+    articles = query.all()
+    
+    # Convert JSON strings to lists for the response
+    results = []
+    for article in articles:
+        article_dict = {
+            "title": article.title,
+            "summary": article.summary,
+            "url": article.url,
+            "source": article.source,
+            "category": article.category,
+            "severity": article.severity,
+            "severity_score": article.severity_score,
+            "confidence": article.confidence,
+            "published_date": article.published_date,
+            "cve": article.cve,
+            "cvss_score": article.cvss_score,
+            "mitre_tactics": article.mitre_tactics_list,
+            "mitre_techniques": article.mitre_techniques_list
+        }
+        results.append(article_dict)
     
     return {
         "total": total,
@@ -681,7 +738,7 @@ def get_threats(
 @app.get("/api/threats/recent")
 def get_recent_threats(db: Session = Depends(get_db), limit: int = Query(10, ge=1, le=50)):
     """Get the most recent threats"""
-    threats = db.query(NewsArticle).order_by(NewsArticle.published_date.desc()).limit(limit).all()
+    articles = db.query(NewsArticle).order_by(NewsArticle.published_date.desc()).limit(limit).all()
     
     return [
         {
@@ -693,9 +750,10 @@ def get_recent_threats(db: Session = Depends(get_db), limit: int = Query(10, ge=
             "severity": article.severity,
             "severity_score": article.severity_score,
             "cve": article.cve,
+            "mitre_tactics": article.mitre_tactics_list,
             "published_date": article.published_date.isoformat() + "Z"
         }
-        for article in threats
+        for article in articles
     ]
 
 @app.get("/api/threats/severe")
@@ -704,135 +762,6 @@ def get_severe_threats(db: Session = Depends(get_db), limit: int = Query(10, ge=
     threats = db.query(NewsArticle).filter(
         NewsArticle.severity.in_(["Critical", "High"])
     ).order_by(NewsArticle.severity_score.desc(), NewsArticle.published_date.desc()).limit(limit).all()
-    
-    return [
-        {
-            "title": article.title,
-            "summary": article.summary,
-            "url": article.url,
-            "source": article.source,
-            "category": article.category,
-            "severity": article.severity,
-            "severity_score": article.severity_score,
-            "cve": article.cve,
-            "published_date": article.published_date.isoformat() + "Z"
-        }
-        for article in threats
-    ]
-
-@app.get("/api/threats/cve/{cve_id}")
-def get_threats_by_cve(cve_id: str, db: Session = Depends(get_db)):
-    """Get threats related to a specific CVE"""
-    threats = db.query(NewsArticle).filter(NewsArticle.cve == cve_id).all()
-    
-    return [
-        {
-            "title": article.title,
-            "summary": article.summary,
-            "url": article.url,
-            "source": article.source,
-            "category": article.category,
-            "severity": article.severity,
-            "severity_score": article.severity_score,
-            "published_date": article.published_date.isoformat() + "Z"
-        }
-        for article in threats
-    ]
-
-@app.get("/api/actors")
-def get_threat_actors(db: Session = Depends(get_db)):
-    """Get threat actor information"""
-    actors = db.query(ThreatActor).all()
-    
-    return [
-        {
-            "name": actor.name,
-            "description": actor.description,
-            "aliases": actor.aliases,
-            "motivation": actor.motivation,
-            "sophistication": actor.sophistication,
-            "first_seen": actor.first_seen.isoformat() + "Z" if actor.first_seen else None,
-            "last_seen": actor.last_seen.isoformat() + "Z" if actor.last_seen else None
-        }
-        for actor in actors
-    ]
-
-@app.get("/api/indicators")
-def get_indicators(
-    db: Session = Depends(get_db),
-    type: Optional[str] = None,
-    days: int = Query(30, ge=1)
-):
-    """Get indicators of compromise (IOCs)"""
-    query = db.query(Indicator)
-    
-    if type:
-        query = query.filter(Indicator.type == type)
-    
-    # Filter by recency
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-    query = query.filter(Indicator.last_seen >= cutoff_date)
-    
-    indicators = query.all()
-    
-    return [
-        {
-            "type": ioc.type,
-            "value": ioc.value,
-            "confidence": ioc.confidence,
-            "context": ioc.context,
-            "first_seen": ioc.first_seen.isoformat() + "Z",
-            "last_seen": ioc.last_seen.isoformat() + "Z"
-        }
-        for ioc in indicators
-    ]
-
-@app.get("/api/fetch")
-@app.post("/api/fetch")
-async def fetch_threats(background_tasks: BackgroundTasks, request: Request):
-    """Trigger a background fetch of new threat intelligence"""
-    background_tasks.add_task(fetch_and_process_news, background_tasks)
-    return {"message": "Threat intelligence fetch started. Check back later for results."}
-
-@app.get("/api/stats")
-def get_statistics(db: Session = Depends(get_db)):
-    """Get threat intelligence statistics"""
-    # Total articles
-    total_articles = db.query(NewsArticle).count()
-    
-    # Articles by severity
-    severity_counts = db.query(
-        NewsArticle.severity, 
-        func.count(NewsArticle.id).label("count")
-    ).group_by(NewsArticle.severity).all()
-    
-    # Articles by category
-    category_counts = db.query(
-        NewsArticle.category, 
-        func.count(NewsArticle.id).label("count")
-    ).group_by(NewsArticle.category).all()
-    
-    # Recent trend (last 30 days)
-    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-    daily_counts = db.query(
-        func.date(NewsArticle.published_date).label("date"),
-        func.count(NewsArticle.id).label("count")
-    ).filter(NewsArticle.published_date >= thirty_days_ago).group_by(
-        func.date(NewsArticle.published_date)
-    ).all()
-    
-    return {
-        "total_articles": total_articles,
-        "severity_distribution": {s[0]: s[1] for s in severity_counts},
-        "category_distribution": {c[0]: c[1] for c in category_counts},
-        "daily_trend": {str(d[0]): d[1] for d in daily_counts}
-    }
-
-# Compatibility endpoint for frontend (existing route)
-@app.get("/news")
-def get_news(db: Session = Depends(get_db)):
-    """Legacy endpoint for frontend compatibility"""
-    articles = db.query(NewsArticle).order_by(NewsArticle.published_date.desc()).all()
     
     return [
         {
