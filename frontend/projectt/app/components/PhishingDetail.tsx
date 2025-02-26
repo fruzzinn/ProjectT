@@ -23,7 +23,10 @@ interface PhishingSite {
   screenshot_path?: string;
   target_page: string;
   html_content?: string;
-  form_targets?: any[];
+  form_targets?: Array<{
+    action: string;
+    method: string;
+  }>;
   registrar?: string;
 }
 
@@ -42,6 +45,7 @@ const PhishingDetail: React.FC<PhishingDetailProps> = ({ siteId, onClose }) => {
     const fetchSiteDetail = async () => {
       try {
         setLoading(true);
+        // In a real implementation, this would be a valid API endpoint
         const response = await fetch(`/api/phishing/sites/${siteId}`);
         
         if (!response.ok) {
@@ -352,6 +356,23 @@ const PhishingDetail: React.FC<PhishingDetailProps> = ({ siteId, onClose }) => {
                       Mark as Active
                     </button>
                   )}
+                  
+                  <button 
+                    className="w-full bg-gray-800 hover:bg-gray-700 text-white py-2 px-4 rounded text-sm flex items-center justify-center"
+                    onClick={() => {
+                      const confirmed = window.confirm(`Are you sure you want to block domain ${site.domain}?`);
+                      if (confirmed) {
+                        // In a real implementation, this would call an API to block the domain
+                        alert(`Domain ${site.domain} has been added to block list`);
+                      }
+                    }}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M4 3a2 2 0 100 4h12a2 2 0 100-4H4z" />
+                      <path fillRule="evenodd" d="M3 8h14v7a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm5 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" clipRule="evenodd" />
+                    </svg>
+                    Block Domain
+                  </button>
                 </div>
               </div>
             </div>
@@ -462,6 +483,41 @@ const PhishingDetail: React.FC<PhishingDetailProps> = ({ siteId, onClose }) => {
                         ? site.html_content.substring(0, 5000) + (site.html_content.length > 5000 ? '...' : '')
                         : 'No HTML content available'}
                     </pre>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="mt-6">
+                <h4 className="text-dark-cyan font-medium mb-3">Source Code Analysis</h4>
+                <div className="bg-gray-800 rounded-lg p-4">
+                  <p className="text-gray-300 text-sm mb-3">
+                    This section analyzes the HTML source code for phishing indicators and suspicious elements.
+                  </p>
+                  
+                  <div className="space-y-3">
+                    <div>
+                      <div className="text-gray-400 text-sm mb-1">Login Form Detection</div>
+                      <div className="flex items-center">
+                        <div className={`w-4 h-4 rounded-full mr-2 ${site.has_login_form ? 'bg-red-500' : 'bg-gray-500'}`}></div>
+                        <span className="text-white">{site.has_login_form ? 'Login form detected' : 'No login form detected'}</span>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-gray-400 text-sm mb-1">Logo Detection</div>
+                      <div className="flex items-center">
+                        <div className={`w-4 h-4 rounded-full mr-2 ${site.has_tamm_logo ? 'bg-red-500' : 'bg-gray-500'}`}></div>
+                        <span className="text-white">{site.has_tamm_logo ? 'Tamm logo detected' : 'No Tamm logo detected'}</span>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-gray-400 text-sm mb-1">SSL Certificate</div>
+                      <div className="flex items-center">
+                        <div className={`w-4 h-4 rounded-full mr-2 ${site.url.startsWith('https') ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                        <span className="text-white">{site.url.startsWith('https') ? 'HTTPS enabled' : 'No HTTPS'}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
